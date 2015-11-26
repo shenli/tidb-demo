@@ -4,10 +4,11 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"math/rand"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
 	"github.com/juju/errors"
+	"github.com/ngaut/log"
 )
 
 var (
@@ -101,14 +102,17 @@ type Customer struct {
 	wallet  int   // Money in the wallet
 	balance int   // Balance in the bank
 	bank    *Bank // Bank
-	friends map[string](chan int)
+	friends []*Customer
 	recvCh  chan int
 	working bool
 }
 
-func (c *Customer) randomMoney(int upper) int {
+func (c *Customer) randomMoney(upper int) int {
 	// Get random money greater than or equals 0, smaller than or equals than upper
-	return 0
+	if upper == 0 {
+		return 0
+	}
+	return int(rand.Int31n(int32(upper)))
 }
 
 // Random deposite
@@ -121,6 +125,7 @@ func (c *Customer) randomDeposit() error {
 	}
 	c.wallet -= n
 	c.balance += n
+	log.Infof("[Customer_%s] Deposite %d from bank.", c.id, n)
 	return nil
 }
 
@@ -137,10 +142,15 @@ func (c *Customer) randomWithdraw() error {
 	return nil
 }
 
+func (c *Customer) randomFriend() (string, chan int) {
+	i := int(rand.Int31n(int32(len(c.friends))))
+	return c.friends[i].id, c.friends[i].recvCh
+}
+
 // Random transfer
 func (c *Customer) randomTransfer() error {
 	n := c.randomMoney(c.balance)
-	f, ch := c.randomFriends()
+	f, ch := c.randomFriend()
 	err := c.bank.transfer(c.id, f, n)
 	if err != nil {
 		return errors.Trace(err)
@@ -161,7 +171,16 @@ func (c *Customer) randomDo() error {
 
 	// random action
 	// GetRandom Action
-
+	action := rand.Int31n(3)
+	switch action {
+	case 0:
+		return c.randomDeposit()
+	case 1:
+		return c.randomWithdraw()
+	case 2:
+		return c.randomTransfer()
+	}
+	return nil
 }
 
 func (c *Customer) run() error {
@@ -172,8 +191,40 @@ func (c *Customer) run() error {
 		case n := <-c.recvCh:
 			c.balance += n
 		case <-ticker.C:
+			err := c.randomDo()
+			if err != nil {
+				return errors.Trace(err)
+			}
 		}
 	}
 }
+
 func main() {
+	bank := &Bank{}
+	err := bank.Open(*dsn)
+	if err != nil {
+		fmt.Println("Open Bank error: ", err)
+	}
+	customers := make([]*Customer, 0, *persons)
+	for i := 0; i < *persons; i++ {
+		c := &Customer{
+			id:      string(i),
+			wallet:  5000,
+			balance: 0,
+			friends: make([]*Customer, 0, *persons-1),
+			recvCh:  make(chan int),
+		}
+		customers = append(customers, c)
+	}
+	for i := 0; i < *persons-1; i++ {
+		for j := i + 1; j < *persons; j++ {
+			c1 := customers[i]
+			c2 := customers[j]
+			c1.friends = append(c1.friends, c2)
+			c2.friends = append(c2.friends, c1)
+		}
+	}
+	for _, c := range customers {
+		go c.run()
+	}
 }
