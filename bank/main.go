@@ -5,8 +5,12 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"strconv"
 	"sync"
 	"time"
+	// For pprof
+	"net/http"
+	_ "net/http/pprof"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/juju/errors"
@@ -72,13 +76,28 @@ func (b *Bank) transfer(from, to string, num int) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	_, err = tx.Exec(fmt.Sprintf("update customers set balance=balance-%d where id=%s", num, from))
+	sql1 := fmt.Sprintf("update customers set balance=balance-%d where id=%s", num, from)
+	sql2 := fmt.Sprintf("update customers set balance=balance+%d where id=%s", num, to)
+	var sqls []string
+	// Solve deadlock
+	fid, err := strconv.Atoi(from)
 	if err != nil {
 		return errors.Trace(err)
 	}
-	_, err = tx.Exec(fmt.Sprintf("update customers set balance=balance+%d where id=%s", num, to))
+	tid, err := strconv.Atoi(to)
 	if err != nil {
 		return errors.Trace(err)
+	}
+	if fid < tid {
+		sqls = []string{sql1, sql2}
+	} else {
+		sqls = []string{sql2, sql1}
+	}
+	for _, s := range sqls {
+		_, err = tx.Exec(s)
+		if err != nil {
+			return errors.Trace(err)
+		}
 	}
 	err = tx.Commit()
 	return errors.Trace(err)
@@ -154,7 +173,7 @@ func (c *Customer) randomDeposit() error {
 	if n == 0 {
 		return nil
 	}
-	log.Infof("[Customer_%s] Begin deposite %d into bank.", c.id, n)
+	//log.Infof("[Customer_%s] Begin deposite %d into bank.", c.id, n)
 	err := c.bank.deposit(c.id, n)
 	if err != nil {
 		//succ
@@ -162,7 +181,7 @@ func (c *Customer) randomDeposit() error {
 	}
 	c.wallet -= n
 	c.balance += n
-	log.Infof("[Customer_%s] Deposite %d into bank success.", c.id, n)
+	//log.Infof("[Customer_%s] Deposite %d into bank success.", c.id, n)
 	return nil
 }
 
@@ -172,7 +191,7 @@ func (c *Customer) randomWithdraw() error {
 	if n == 0 {
 		return nil
 	}
-	log.Infof("[Customer_%s] Begin withdraw %d money from bank.", c.id, n)
+	//log.Infof("[Customer_%s] Begin withdraw %d money from bank.", c.id, n)
 	err := c.bank.withdraw(c.id, n)
 	if err != nil {
 		//succ
@@ -180,13 +199,13 @@ func (c *Customer) randomWithdraw() error {
 	}
 	c.wallet += n
 	c.balance -= n
-	log.Infof("[Customer_%s] Withdraw %d money from bank success.", c.id, n)
+	//log.Infof("[Customer_%s] Withdraw %d money from bank success.", c.id, n)
 	return nil
 }
 
-func (c *Customer) randomFriend() (string, chan int) {
+func (c *Customer) randomFriend() *Customer {
 	i := int(rand.Int31n(int32(len(c.friends))))
-	return c.friends[i].id, c.friends[i].recvCh
+	return c.friends[i]
 }
 
 // Random transfer
@@ -195,20 +214,21 @@ func (c *Customer) randomTransfer() error {
 	if n == 0 {
 		return nil
 	}
-	f, ch := c.randomFriend()
-	log.Infof("[Customer_%s] Begin transfer %d money to Customer_%s.", c.id, n, f)
-	err := c.bank.transfer(c.id, f, n)
+	f := c.randomFriend()
+	//log.Infof("[Customer_%s] Begin transfer %d money to Customer_%s.", c.id, n, f)
+	err := c.bank.transfer(c.id, f.id, n)
 	if err != nil {
 		return errors.Trace(err)
 	}
-	ch <- n
+	f.recvCh <- n
 	c.balance -= n
-	log.Infof("[Customer_%s] Transfer %d money to Customer_%s succ.", c.id, n, f)
+	//log.Infof("[Customer_%s] Transfer %d money to Customer_%s succ.", c.id, n, f)
 	return nil
 }
 
 func (c *Customer) randomDo() error {
 	if c.working {
+		//log.Infof("[Customer_%s] is working....", c.id)
 		return nil
 	}
 	c.working = true
@@ -219,17 +239,25 @@ func (c *Customer) randomDo() error {
 	// random action
 	// GetRandom Action
 	action := int(rand.Int31n(3))
+	var err error
 	if action == 0 {
-		return c.randomDeposit()
+		err = c.randomDeposit()
 	} else if action == 1 {
-		return c.randomWithdraw()
+		err = c.randomWithdraw()
 	} else if action == 2 {
-		return c.randomTransfer()
+		err = c.randomTransfer()
+	} else {
+		return errors.Errorf("Wrong Type of action ", action)
 	}
-	return errors.Errorf("Wrong Type of action ", action)
+	if err != nil {
+		//log.Errorf("[Customer_%s] action %d failed!!: %v", c.id, action, err)
+		return errors.Trace(err)
+	}
+	//log.Infof("[Customer_%s] action %d succ", c.id, action)
+	return nil
 }
 
-func (c *Customer) run(wg sync.WaitGroup) error {
+func (c *Customer) run() error {
 	ticker := time.NewTicker(1 * time.Second)
 	cnt := 0
 	defer func() {
@@ -256,12 +284,17 @@ func (c *Customer) run(wg sync.WaitGroup) error {
 	}
 }
 
+var wg sync.WaitGroup
+
 func main() {
+	go http.ListenAndServe("localhost:8889", nil)
+	// Create and open bank
 	bank := &Bank{}
 	err := bank.Open(*dsn)
 	if err != nil {
 		fmt.Println("Open Bank error: ", err)
 	}
+	// Create customers
 	customers := make([]*Customer, 0, *persons)
 	initWallet := 5000
 	for i := 0; i < *persons; i++ {
@@ -282,6 +315,7 @@ func main() {
 		customers = append(customers, c)
 		log.Infof("Create user %s succ", c.id)
 	}
+	// Make customers become friends to each other.
 	for i := 0; i < *persons-1; i++ {
 		for j := i + 1; j < *persons; j++ {
 			c1 := customers[i]
@@ -290,11 +324,12 @@ func main() {
 			c2.friends = append(c2.friends, c1)
 		}
 	}
-	var wg sync.WaitGroup
-	wg.Add(len(customers))
+	// Start to act.
 	fmt.Println("Bank Demo begin.......")
-	for _, c := range customers {
-		go c.run(wg)
+	for i, c := range customers {
+		log.Infof("wg add %d", i)
+		wg.Add(1)
+		go c.run()
 	}
 	wg.Wait()
 	fmt.Println("Bank Demo End!")
