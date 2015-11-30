@@ -18,9 +18,11 @@ import (
 )
 
 var (
-	dsn                  = flag.String("dsn", "root:@(127.0.0.1:4000)/test", "DB dsn to use.")
-	persons              = flag.Int("persons", 5, "Number of concurrent persions.")
-	balanceCheckInterval = flag.Duration("balance-check-interval", 1*time.Second, "Interval of balance check.")
+	dsn = flag.String("dsn", "root:@(127.0.0.1:4000)/test", "DB dsn to use.")
+	//dsn                  = flag.String("dsn", "root:@(127.0.0.1:3306)/test", "DB dsn to use.")
+	persons = flag.Int("persons", 5, "Number of concurrent persions.")
+	//balanceCheckInterval = flag.Duration("balance-check-interval", 1*time.Second, "Interval of balance check.")
+	maxActionCnt = 10
 )
 
 type Bank struct {
@@ -79,7 +81,7 @@ func (b *Bank) transfer(from, to string, num int) error {
 	sql1 := fmt.Sprintf("update customers set balance=balance-%d where id=%s", num, from)
 	sql2 := fmt.Sprintf("update customers set balance=balance+%d where id=%s", num, to)
 	var sqls []string
-	// Solve deadlock
+	// Try to solve deadlock
 	fid, err := strconv.Atoi(from)
 	if err != nil {
 		return errors.Trace(err)
@@ -173,7 +175,7 @@ func (c *Customer) randomDeposit() error {
 	if n == 0 {
 		return nil
 	}
-	//log.Infof("[Customer_%s] Begin deposite %d into bank.", c.id, n)
+	log.Infof("[Customer_%s] Begin deposite %d into bank.", c.id, n)
 	err := c.bank.deposit(c.id, n)
 	if err != nil {
 		//succ
@@ -181,7 +183,7 @@ func (c *Customer) randomDeposit() error {
 	}
 	c.wallet -= n
 	c.balance += n
-	//log.Infof("[Customer_%s] Deposite %d into bank success.", c.id, n)
+	log.Infof("[Customer_%s] Deposite %d into bank success.", c.id, n)
 	return nil
 }
 
@@ -191,7 +193,7 @@ func (c *Customer) randomWithdraw() error {
 	if n == 0 {
 		return nil
 	}
-	//log.Infof("[Customer_%s] Begin withdraw %d money from bank.", c.id, n)
+	log.Infof("[Customer_%s] Begin withdraw %d money from bank.", c.id, n)
 	err := c.bank.withdraw(c.id, n)
 	if err != nil {
 		//succ
@@ -199,7 +201,7 @@ func (c *Customer) randomWithdraw() error {
 	}
 	c.wallet += n
 	c.balance -= n
-	//log.Infof("[Customer_%s] Withdraw %d money from bank success.", c.id, n)
+	log.Infof("[Customer_%s] Withdraw %d money from bank success.", c.id, n)
 	return nil
 }
 
@@ -215,14 +217,14 @@ func (c *Customer) randomTransfer() error {
 		return nil
 	}
 	f := c.randomFriend()
-	//log.Infof("[Customer_%s] Begin transfer %d money to Customer_%s.", c.id, n, f)
+	log.Infof("[Customer_%s] Begin transfer %d money to Customer_%s.", c.id, n, f.id)
 	err := c.bank.transfer(c.id, f.id, n)
 	if err != nil {
 		return errors.Trace(err)
 	}
 	f.recvCh <- n
 	c.balance -= n
-	//log.Infof("[Customer_%s] Transfer %d money to Customer_%s succ.", c.id, n, f)
+	log.Infof("[Customer_%s] Transfer %d money to Customer_%s succ.", c.id, n, f.id)
 	return nil
 }
 
@@ -271,7 +273,7 @@ func (c *Customer) run() error {
 			c.balance += n
 		case <-ticker.C:
 			cnt += 1
-			if cnt > 60 {
+			if cnt > maxActionCnt {
 				return nil
 			}
 			log.Infof("[Customer_%s] round %d", c.id, cnt)
