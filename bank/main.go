@@ -19,10 +19,10 @@ import (
 
 var (
 	dsn = flag.String("dsn", "root:@(127.0.0.1:4000)/test", "DB dsn to use.")
-	//dsn                  = flag.String("dsn", "root:@(127.0.0.1:3306)/test", "DB dsn to use.")
+	//dsn     = flag.String("dsn", "root:@(127.0.0.1:3306)/test", "DB dsn to use.")
 	persons = flag.Int("persons", 5, "Number of concurrent persions.")
 	//balanceCheckInterval = flag.Duration("balance-check-interval", 1*time.Second, "Interval of balance check.")
-	maxActionCnt = 10
+	maxActionCnt = 60
 )
 
 type Bank struct {
@@ -222,7 +222,9 @@ func (c *Customer) randomTransfer() error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	f.recvCh <- n
+	go func() {
+		f.recvCh <- n
+	}()
 	c.balance -= n
 	log.Infof("[Customer_%s] Transfer %d money to Customer_%s succ.", c.id, n, f.id)
 	return nil
